@@ -3,6 +3,8 @@
 // the server adds 1 to that day's total.
 // POST /api/usage {event}            -> { ok }
 // GET  /api/usage (x-admin-key)      -> { totals, last30, days: [{day, event, n}] }  for the admin page
+//      ?since=<ISO time>             -> also { since: {event: n}, hourlyFrom }: counts from that hour on (UTC hours;
+//                                       hourly counting started later than daily, so hourlyFrom says when)
 import { json, isAdmin } from "../_lib.js";
 import { db, isJson } from "../_auth.js";
 import { underLimit } from "../_limits.js";
@@ -18,8 +20,11 @@ export async function onRequestPost({ request, env }) {
   const event = typeof body?.event === "string" ? body.event : "";
   if (!EVENTS.includes(event)) return json({ error: "Unknown event." }, 400);
   if (!await underLimit(env, request, "usage", DAILY_PER_VISITOR)) return json({ ok: true }); // quietly drop
-  await (await db(env)).prepare("INSERT INTO usage_counts (day, event, n) VALUES (?, ?, 1) ON CONFLICT (day, event) DO UPDATE SET n = n + 1")
-    .bind(new Date().toISOString().slice(0, 10), event).run();
+  const DB = await db(env), now = new Date().toISOString();
+  await DB.batch([
+    DB.prepare("INSERT INTO usage_counts (day, event, n) VALUES (?, ?, 1) ON CONFLICT (day, event) DO UPDATE SET n = n + 1").bind(now.slice(0, 10), event),
+    DB.prepare("INSERT INTO usage_hourly (hour, event, n) VALUES (?, ?, 1) ON CONFLICT (hour, event) DO UPDATE SET n = n + 1").bind(now.slice(0, 13), event),
+  ]);
   return json({ ok: true });
 }
 
@@ -31,5 +36,12 @@ export async function onRequestGet({ request, env }) {
   const totals = sum((await DB.prepare("SELECT event, SUM(n) AS n FROM usage_counts GROUP BY event").all()).results);
   const last30 = sum((await DB.prepare("SELECT event, SUM(n) AS n FROM usage_counts WHERE day >= ? GROUP BY event").bind(since).all()).results);
   const days = (await DB.prepare("SELECT day, event, n FROM usage_counts WHERE day >= ? AND event = 'active' ORDER BY day").bind(since120).all()).results;
-  return json({ totals, last30, days }, 200);
+  const out = { totals, last30, days };
+  // A chosen start time (e.g. when the app was posted somewhere), to the hour.
+  const s = Date.parse(new URL(request.url).searchParams.get("since") || "");
+  if (Number.isFinite(s)) {
+    out.since = sum((await DB.prepare("SELECT event, SUM(n) AS n FROM usage_hourly WHERE hour >= ? GROUP BY event").bind(new Date(s).toISOString().slice(0, 13)).all()).results);
+    out.hourlyFrom = (await DB.prepare("SELECT MIN(hour) AS h FROM usage_hourly").first())?.h || null;
+  }
+  return json(out, 200);
 }

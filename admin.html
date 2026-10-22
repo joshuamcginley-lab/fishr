@@ -49,7 +49,8 @@ ol.steps{margin:0;padding-left:20px;display:grid;gap:4px;font-size:14px}
   </div>
   <div id="panels" hidden style="display:grid;gap:18px">
     <div class="card">
-      <div class="row" style="justify-content:space-between"><span class="k">Usage (anonymous, one count per phone per milestone)</span><span class="row"><button class="ghost" id="u30">Last 30 days</button><button class="ghost" id="uAll">All time</button></span></div>
+      <div class="row" style="justify-content:space-between"><span class="k">Usage (anonymous, one count per phone per milestone)</span><span class="row"><button class="ghost" id="u30">Last 30 days</button><button class="ghost" id="uAll">All time</button><button class="ghost" id="uSince">Since…</button></span></div>
+      <div class="row" id="sinceRow" hidden><span class="muted">Since</span><input type="datetime-local" id="sinceAt" style="flex:0 1 240px"><span class="muted" id="sinceNote" style="font-size:13px"></span></div>
       <div id="usage" class="muted">Loading…</div>
       <span class="k">Phones that logged a trip, by week</span>
       <div class="weeks" id="weeks"></div>
@@ -122,7 +123,7 @@ $("csv").onclick = async () => {
 // Usage: the funnel from opening fishr to still logging a month later, and weekly active phones.
 const STEPS = [["open", "Opened fishr"], ["showcase", "Opened the showcase"], ["trip1", "Logged a 1st trip"], ["trip3", "3rd trip"], ["trip5", "5th trip"],
   ["trip10", "10th trip"], ["guide", "Guide unlocked"], ["retained14", "Still logging after 2 weeks"], ["retained30", "Still logging after 4 weeks"],
-  ["cloud", "Turned on Cloud"], ["ask", "Used Ask fishr"], ["fishrid", "Used fishr ID"]];
+  ["cloud", "Turned on Cloud"], ["ask", "Used Ask fishr"], ["fishrid", "Used Fish ID"]];
 let usageData = null, usageView = "last30";
 async function loadUsage() {
   const r = await api("/api/usage").catch(() => null);
@@ -131,7 +132,8 @@ async function loadUsage() {
 }
 function showUsage() {
   const d = usageData[usageView] || {}, top = Math.max(1, d.open || 0, ...STEPS.map(([k]) => d[k] || 0));
-  $("u30").style.opacity = usageView === "last30" ? 1 : .5; $("uAll").style.opacity = usageView === "totals" ? 1 : .5;
+  $("u30").style.opacity = usageView === "last30" ? 1 : .5; $("uAll").style.opacity = usageView === "totals" ? 1 : .5; $("uSince").style.opacity = usageView === "since" ? 1 : .5;
+  $("sinceRow").hidden = usageView !== "since";
   $("usage").innerHTML = `<table><tr><th>Milestone</th><th class="r">Phones</th><th class="r">of opened</th><th class="barc"></th></tr>${STEPS.map(([k, label]) => {
     const n = d[k] || 0, pct = d.open ? Math.round(n / d.open * 100) + "%" : "—";
     return `<tr><td>${esc(label)}</td><td class="r">${n}</td><td class="r">${k === "open" ? "" : pct}</td><td class="barc"><div class="bar" style="width:${n / top * 100}%"></div></td></tr>`;
@@ -201,6 +203,22 @@ $("mkPush").onclick = async () => {
 $("mkCron").onclick = () => { made["PUSH_CRON_KEY (secret: same value in Cloudflare and GitHub)"] = b64u(crypto.getRandomValues(new Uint8Array(32))); showKeys(); };
 $("u30").onclick = () => { usageView = "last30"; if (usageData) showUsage(); };
 $("uAll").onclick = () => { usageView = "totals"; if (usageData) showUsage(); };
+// "Since…": counts from a chosen time (e.g. when fishr was posted somewhere), by the hour. Remembered on this browser.
+const SINCE_KEY = "fishr-admin-since", LAUNCH = "2026-10-21T20:30"; // posted on Reddit, Oct 21 at 8:30 PM
+const sinceVal = () => { try { return localStorage.getItem(SINCE_KEY) || LAUNCH; } catch (e) { return LAUNCH; } };
+async function loadSince() {
+  const at = new Date($("sinceAt").value); if (isNaN(at)) return;
+  try { localStorage.setItem(SINCE_KEY, $("sinceAt").value); } catch (e) {}
+  $("sinceNote").textContent = "Loading…";
+  const r = await api("/api/usage?since=" + encodeURIComponent(at.toISOString())).catch(() => null), d = r && r.ok ? await r.json() : null;
+  if (!d) { $("sinceNote").textContent = "Couldn't load."; return; }
+  usageData = d; usageView = "since"; showUsage();
+  // Hourly counting started after daily counting: say so when the chosen time is earlier.
+  const from = d.hourlyFrom ? new Date(d.hourlyFrom + ":00:00Z") : null;
+  $("sinceNote").textContent = !from ? "Counted to the hour." : at < from ? `Counted by the hour since ${from.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}; visits before that are only in the daily totals.` : "Counted to the hour.";
+}
+$("uSince").onclick = () => { $("sinceAt").value = sinceVal(); $("sinceRow").hidden = false; loadSince(); };
+$("sinceAt").onchange = loadSince;
 if (key) unlock();
 </script>
 </body>

@@ -24,6 +24,16 @@ for (let i = 0; i < 80; i++) await post({ event: "active" }, { ip: "3.3.3.3" });
 d = await (await get("k")).json();
 ok(d.totals.active === 60, "per-visitor cap: 80 reports count as 60 " + d.totals.active);
 ok(Array.isArray(d.days) && d.days.every(x => x.event === "active") && d.days[0].n === 60, "weekly chart data: daily 'active' totals");
+// Since a chosen time, by the hour: only later hours count; the hourly table holds only hour, milestone and count.
+const getSince = since => usage.onRequestGet({ env, request: new Request(`https://fishr.monster/api/usage?since=${encodeURIComponent(since)}`, { headers: { "x-admin-key": "k" } }) });
+env.DB._sql.prepare("INSERT INTO usage_hourly (hour, event, n) VALUES ('2020-01-01T05', 'open', 7)").run(); // long before
+d = await (await getSince(new Date(Date.now() - 36e5).toISOString())).json();
+ok(d.since.open === 1 && d.since.trip1 === 2 && d.since.ask === 1 && d.hourlyFrom === "2020-01-01T05", "since an hour ago: this session's counts only " + JSON.stringify(d.since));
+d = await (await getSince("2020-01-01T04:30:00Z")).json();
+ok(d.since.open === 8, "since before the old hour: it counts too " + d.since.open);
+d = await (await get("k")).json();
+ok(d.since === undefined, "no since: no since counts");
+ok(env.DB._sql.prepare("PRAGMA table_info(usage_hourly)").all().map(c => c.name).join() === "hour,event,n", "hourly table holds only hour, milestone and count");
 // No database bound: the app still works.
 r = await usage.onRequestPost({ env: {}, request: new Request("https://fishr.monster/api/usage", { method: "POST", headers: { "content-type": "application/json" }, body: '{"event":"open"}' }) });
 ok(r.status === 200, "no database: quietly ignored");
